@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/resultstable.tsx","./src/components/settings.tsx","./src/data/presets.ts","./src/data/worlds.ts","./src/lib/arbitrage.ts","./src/lib/ratelimit.ts","./src/lib/universalis.ts","./src/lib/xivapi.ts"],"version":"5.6.3"}
