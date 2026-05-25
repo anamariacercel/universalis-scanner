@@ -1,4 +1,5 @@
 import { DATA_CENTERS, REGIONS, Region } from '../data/worlds';
+import type { Preset } from '../data/presets';
 
 export interface Settings {
   region: Region;
@@ -15,7 +16,7 @@ export interface Settings {
 interface Props {
   value: Settings;
   onChange: (s: Settings) => void;
-  presets: Array<{ id: string; label: string; description: string }>;
+  presets: Preset[];
 }
 
 export function SettingsPanel({ value, onChange, presets }: Props) {
@@ -72,13 +73,19 @@ export function SettingsPanel({ value, onChange, presets }: Props) {
           <select
             className="input"
             value={value.presetId}
-            onChange={(e) => update({ presetId: e.target.value })}
+            onChange={(e) => {
+              const next = presets.find((p) => p.id === e.target.value);
+              if (!next) return;
+              // Apply the preset's tuned thresholds — defaults that work for
+              // Materia will filter slow-movers (dyes/glamour) to zero rows.
+              update({ presetId: next.id, ...next.thresholds });
+            }}
           >
             {presets.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
           </select>
         </Field>
         <Field label="Max Items to Scan">
-          <input type="number" className="input" min={20} max={500}
+          <input type="number" className="input" min={20} max={10000}
             value={value.maxItems}
             onChange={(e) => update({ maxItems: Number(e.target.value) || 100 })} />
         </Field>

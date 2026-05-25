@@ -24,9 +24,16 @@ export interface ArbitrageRow {
   homeWorld: string;
   homePrice: number;       // lowest current home-world price (NQ)
   homeListings: number;
-  profitGil: number;       // NET profit after 5% MB tax
+  profitGil: number;       // NET profit per unit after 5% MB tax
   profitPct: number;       // NET ROI after 5% MB tax (vs. buy price)
   salesPerDay: number;
+  // Total profit from buying out every profitable listing on the buy world:
+  // profitGil × buyableSupply. The right metric for arbitrage — gil/day was
+  // misleading for niche items that don't restock at the cheap price.
+  tripProfit: number;
+  // Total supply (units) available on the buy world at a profitable price.
+  // Aggregated across listings, not just the cheapest one.
+  buyableSupply: number;
   lastSaleHoursAgo: number;
   hq: boolean;
 }
@@ -61,13 +68,23 @@ function computeSalesPerDay(h: HistoryEntry | undefined): { perDay: number; last
   const lastSaleHoursAgo = Math.max(0, (now - newest) / 3600);
 
   // Sales/day across the observed window, but cap window at 7 days so
-  // a one-time sale doesn't get amortized away.
+  // a one-time sale doesn't get amortized away. `now - oldest` already
+  // folds in any dry stretch at the end of the window, so a recent
+  // slowdown drags this number down without extra logic.
   const spanSeconds = Math.max(3600, Math.min(now - oldest, 7 * 24 * 3600));
-  const perDay = (sorted.length / spanSeconds) * 86400;
+  const longRunPerDay = (sorted.length / spanSeconds) * 86400;
 
-  // If Universalis provides regularSaleVelocity and our window is narrow, prefer it.
-  const fromVelocity = h.regularSaleVelocity ?? 0;
-  return { perDay: Math.max(perDay, fromVelocity), lastSaleHoursAgo };
+  // Don't take max() with Universalis's regularSaleVelocity — it's a
+  // long-window average that can mask recent declines, so picking the
+  // larger of the two is biased upward. Observed wins when we have data.
+  // Then apply a recency haircut: if the last sale was >24h ago, the
+  // *current* rate is almost certainly below the long-run average.
+  // Cap at 24h / lastSaleHoursAgo so a 48h gap means ≤0.5/day, regardless
+  // of what history says.
+  const recencyCap = lastSaleHoursAgo <= 24 ? 1 : 24 / lastSaleHoursAgo;
+  const perDay = longRunPerDay * recencyCap;
+
+  return { perDay, lastSaleHoursAgo };
 }
 
 export async function runArbitrage(opts: EngineOptions): Promise<ArbitrageRow[]> {
@@ -76,22 +93,41 @@ export async function runArbitrage(opts: EngineOptions): Promise<ArbitrageRow[]>
 
   if (itemIds.length === 0) return [];
 
-  progress('Fetching DC listings…', 0.05);
-  const dcCurrent = await fetchCurrent(dataCenter, itemIds, { listings: 5 });
+  // Pass 1 — fetch home-world history FIRST and drop items that don't sell
+  // on the world we'd list on. Velocity filtering before listing fetches
+  // cuts API budget on dead items by ~70-90% on a broad scan.
+  progress('Fetching home-world sales history…', 0.05);
+  const history = await fetchHistory(homeWorld, itemIds, { entriesToReturn: 50 });
 
-  progress('Fetching home-world listings…', 0.4);
-  const homeCurrent = await fetchCurrent(homeWorld, itemIds, { listings: 5 });
+  const velocities = new Map<number, { perDay: number; lastSaleHoursAgo: number }>();
+  const survivors: number[] = [];
+  for (const id of itemIds) {
+    const v = computeSalesPerDay(history.get(id));
+    if (v.perDay < opts.minSalesPerDay) continue;
+    if (v.lastSaleHoursAgo > opts.maxLastSaleHours) continue;
+    velocities.set(id, v);
+    survivors.push(id);
+  }
 
-  progress('Fetching sales history…', 0.65);
-  const history = await fetchHistory(dataCenter, itemIds, { entriesToReturn: 50 });
+  if (survivors.length === 0) {
+    progress('No items passed the velocity filter.', 1);
+    return [];
+  }
+
+  // Pass 2 — fetch listings only for items that actually sell.
+  progress(`Fetching DC listings (${survivors.length} survivors)…`, 0.5);
+  const dcCurrent = await fetchCurrent(dataCenter, survivors, { listings: 5 });
+
+  progress('Fetching home-world listings…', 0.75);
+  const homeCurrent = await fetchCurrent(homeWorld, survivors, { listings: 5 });
 
   progress('Scoring opportunities…', 0.9);
   const rows: ArbitrageRow[] = [];
 
-  for (const id of itemIds) {
+  for (const id of survivors) {
     const dcEntry = dcCurrent.get(id);
     const homeEntry = homeCurrent.get(id);
-    const histEntry = history.get(id);
+    const v = velocities.get(id)!;
 
     const dcLow = lowestListing(dcEntry);
     const homeLow = lowestListing(homeEntry);
@@ -106,9 +142,13 @@ export async function runArbitrage(opts: EngineOptions): Promise<ArbitrageRow[]>
     if (netProfit < opts.minProfitGil) continue;
     if (netRoi < opts.minRoiPercent) continue;
 
-    const { perDay, lastSaleHoursAgo } = computeSalesPerDay(histEntry);
-    if (perDay < opts.minSalesPerDay) continue;
-    if (lastSaleHoursAgo > opts.maxLastSaleHours) continue;
+    // Sum every listing on the buy world (matching HQ) that's still
+    // profitable after the 5% MB tax. This is the real ceiling on how much
+    // you can flip in one trip — not just the cheapest listing's quantity.
+    const sellThreshold = homeLow.pricePerUnit * (1 - MB_TAX);
+    const buyableSupply = (dcEntry?.listings ?? [])
+      .filter((l) => l.worldName === buyWorld && l.hq === dcLow.hq && l.pricePerUnit < sellThreshold)
+      .reduce((sum, l) => sum + l.quantity, 0);
 
     rows.push({
       itemId: id,
@@ -122,13 +162,15 @@ export async function runArbitrage(opts: EngineOptions): Promise<ArbitrageRow[]>
       homeListings: homeEntry?.listings?.length ?? 0,
       profitGil: Math.round(netProfit),
       profitPct: netRoi,
-      salesPerDay: perDay,
-      lastSaleHoursAgo,
+      salesPerDay: v.perDay,
+      tripProfit: Math.round(netProfit * buyableSupply),
+      buyableSupply,
+      lastSaleHoursAgo: v.lastSaleHoursAgo,
       hq: dcLow.hq,
     });
   }
 
-  rows.sort((a, b) => b.profitGil - a.profitGil);
+  rows.sort((a, b) => b.tripProfit - a.tripProfit);
   progress('Done.', 1);
   return rows;
 }

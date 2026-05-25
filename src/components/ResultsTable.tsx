@@ -1,14 +1,14 @@
 import { useMemo, useState } from 'react';
 import { ArbitrageRow } from '../lib/arbitrage';
 
-type SortKey = 'profitGil' | 'profitPct' | 'salesPerDay' | 'buyPrice' | 'homePrice' | 'itemName';
+type SortKey = 'tripProfit' | 'profitGil' | 'profitPct' | 'salesPerDay' | 'buyPrice' | 'homePrice' | 'itemName';
 
 interface Props {
   rows: ArbitrageRow[];
 }
 
 export function ResultsTable({ rows }: Props) {
-  const [sortKey, setSortKey] = useState<SortKey>('profitGil');
+  const [sortKey, setSortKey] = useState<SortKey>('tripProfit');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [minVelocity, setMinVelocity] = useState(0);
   const [query, setQuery] = useState('');
@@ -65,14 +65,21 @@ export function ResultsTable({ rows }: Props) {
               <Th className="text-right" onClick={() => toggleSort('buyPrice')} active={sortKey === 'buyPrice'} dir={sortDir}>Buy Price</Th>
               <Th className="text-right">Sell At</Th>
               <Th className="text-right" onClick={() => toggleSort('homePrice')} active={sortKey === 'homePrice'} dir={sortDir}>Home Price</Th>
-              <Th className="text-right" onClick={() => toggleSort('profitGil')} active={sortKey === 'profitGil'} dir={sortDir}>Profit</Th>
+              <Th className="text-right" onClick={() => toggleSort('profitGil')} active={sortKey === 'profitGil'} dir={sortDir}>Profit/ea</Th>
               <Th className="text-right" onClick={() => toggleSort('profitPct')} active={sortKey === 'profitPct'} dir={sortDir}>%</Th>
+              <Th
+                className="text-right"
+                onClick={() => toggleSort('tripProfit')}
+                active={sortKey === 'tripProfit'}
+                dir={sortDir}
+                title="Total profit from buying out every profitable listing on the buy world: profit/ea × buyable supply."
+              >Trip Profit</Th>
               <Th className="text-right" onClick={() => toggleSort('salesPerDay')} active={sortKey === 'salesPerDay'} dir={sortDir}>Velocity</Th>
             </tr>
           </thead>
           <tbody>
             {visible.length === 0 && (
-              <tr><td colSpan={8} className="text-center text-muted py-10">
+              <tr><td colSpan={9} className="text-center text-muted py-10">
                 No arbitrage opportunities matching the current filters. Run a scan or relax thresholds.
               </td></tr>
             )}
@@ -88,7 +95,13 @@ export function ResultsTable({ rows }: Props) {
                   </div>
                 </td>
                 <td className="px-4 py-2 text-right text-accent2">{r.buyWorld}</td>
-                <td className="px-4 py-2 text-right">{fmt(r.buyPrice)} <span className="text-muted">×{r.buyQuantity}</span></td>
+                <td className="px-4 py-2 text-right">
+                  {fmt(r.buyPrice)}{' '}
+                  <span className="text-muted" title={`Cheapest listing has ${r.buyQuantity} unit(s); ${r.buyableSupply} total profitable on ${r.buyWorld}`}>
+                    ×{r.buyQuantity}
+                    {r.buyableSupply > r.buyQuantity && <span className="opacity-70"> ({r.buyableSupply} total)</span>}
+                  </span>
+                </td>
                 <td className="px-4 py-2 text-right text-accent">{r.homeWorld}</td>
                 <td className="px-4 py-2 text-right">{fmt(r.homePrice)}</td>
                 <td className={`px-4 py-2 text-right font-semibold ${r.profitGil > 0 ? 'text-good' : 'text-bad'}`}>
@@ -96,6 +109,9 @@ export function ResultsTable({ rows }: Props) {
                 </td>
                 <td className={`px-4 py-2 text-right ${r.profitPct > 0 ? 'text-good' : 'text-bad'}`}>
                   {r.profitPct.toFixed(0)}%
+                </td>
+                <td className={`px-4 py-2 text-right font-semibold ${r.tripProfit > 0 ? 'text-good' : 'text-bad'}`}>
+                  {fmt(r.tripProfit)}
                 </td>
                 <td className="px-4 py-2 text-right">
                   {r.salesPerDay.toFixed(1)}/day
@@ -111,14 +127,15 @@ export function ResultsTable({ rows }: Props) {
 }
 
 function Th({
-  children, onClick, active, dir, className = '',
+  children, onClick, active, dir, className = '', title,
 }: {
-  children: React.ReactNode; onClick?: () => void; active?: boolean; dir?: 'asc' | 'desc'; className?: string;
+  children: React.ReactNode; onClick?: () => void; active?: boolean; dir?: 'asc' | 'desc'; className?: string; title?: string;
 }) {
   return (
     <th
       className={`px-4 py-2 font-medium text-left ${onClick ? 'cursor-pointer select-none hover:text-slate-100' : ''} ${className}`}
       onClick={onClick}
+      title={title}
     >
       {children}{active && (dir === 'desc' ? ' ↓' : ' ↑')}
     </th>
